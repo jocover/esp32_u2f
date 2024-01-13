@@ -1,0 +1,4 @@
+## IDF Component Manager Manifest File
+dependencies:
+  espressif/tinyusb: "~0.14.3"
+  idf: "^5.0"
