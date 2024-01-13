@@ -118,11 +118,8 @@ bool u2f_init(U2fData* U2F) {
         return false;
     }
     if(u2f_data_key_load(U2F->device_key) == false) {
-        ESP_LOGE(TAG, "Key loading error, generating new");
-        if(u2f_data_key_generate(U2F->device_key) == false) {
-            ESP_LOGE(TAG, "Key write failed");
-            return false;
-        }
+        ESP_LOGE(TAG, "Devicd Key load error");
+        return false;  
     }
     if(u2f_data_cnt_read(&U2F->counter) == false) {
         ESP_LOGE(TAG, "Counter loading error, resetting counter");

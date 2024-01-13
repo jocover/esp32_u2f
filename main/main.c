@@ -14,7 +14,7 @@
 #include "sdkconfig.h"
 #include "u2f_hid.h"
 #include "u2f.h"
-
+#include "nvs_flash.h"
 
 static U2fHid u2f_hid;
 static U2fData u2f_data;
@@ -117,6 +117,16 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 
 void app_main(void)
 {
+
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+        // NVS partition was truncated and needs to be erased
+        // Retry nvs_flash_init
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(err);
 
     if (u2f_init(&u2f_data))
     {

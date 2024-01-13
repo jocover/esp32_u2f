@@ -6,10 +6,11 @@
 #include "esp_efuse.h"
 #include "esp_efuse_table.h"
 #include <mbedtls/sha256.h>
+#include "nvs_flash.h"
 
 #define TAG "U2f"
 
-#define NVS_PART_NAMESPACE "storage"
+#define NVS_NAMESPACE "storage"
 #define U2F_CERT_FILE "u2f_cert"
 #define U2F_CERT_KEY_FILE "u2f_cert_key"
 #define U2F_KEY_FILE "u2f_key"
@@ -78,26 +79,50 @@ bool u2f_data_key_load(uint8_t *device_key)
     return true;
 }
 
-bool u2f_data_key_generate(uint8_t *device_key)
-{
-
-    return true;
-}
-
-static uint32_t u2f_cnt = 0;
 
 bool u2f_data_cnt_read(uint32_t *cnt_val)
 {
 
-    *cnt_val = u2f_cnt;
+    bool state = false;
 
-    return true;
+    esp_err_t err;
+    nvs_handle_t nvs_handle;
+    err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK)
+        return false;
+
+    err = nvs_get_u32(nvs_handle, U2F_CNT_FILE, cnt_val);
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND)
+        return false;
+
+    state = true;
+
+    nvs_close(nvs_handle);
+
+    return state;
 }
 
 bool u2f_data_cnt_write(uint32_t cnt_val)
 {
 
-    u2f_cnt = cnt_val;
+    bool state = false;
+    esp_err_t err;
+    nvs_handle_t nvs_handle;
+    err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK)
+        return false;
 
-    return true;
+    err = nvs_set_u32(nvs_handle, U2F_CNT_FILE, cnt_val);
+    if (err != ESP_OK)
+        return false;
+
+    err = nvs_commit(nvs_handle);
+    if (err != ESP_OK)
+        return false;
+
+    state = true;
+
+    nvs_close(nvs_handle);
+
+    return state;
 }
