@@ -32,13 +32,13 @@ bool u2f_data_cert_check()
 
     if ((u2f_cert_end - u2f_cert_start) > 0)
         state = true;
-    ESP_LOGD(TAG, "u2f_data_cert_check:%d", u2f_cert_end - u2f_cert_start - 1);
+    ESP_LOGD(TAG, "u2f_data_cert_check:%d", u2f_cert_end - u2f_cert_start);
     return state;
 }
 
 uint32_t u2f_data_cert_load(uint8_t *cert)
 {
-    uint32_t cert_len = u2f_cert_end - u2f_cert_start - 1;
+    uint32_t cert_len = u2f_cert_end - u2f_cert_start;
     memcpy(cert, u2f_cert_start, cert_len);
 
     return cert_len;
@@ -49,7 +49,7 @@ bool u2f_data_cert_key_load(uint8_t *cert_key)
 
     bool state = false;
 
-    uint32_t cert_ken_len = u2f_cert_key_end - u2f_cert_key_start - 1;
+    uint32_t cert_ken_len = u2f_cert_key_end - u2f_cert_key_start;
 
     memcpy(cert_key, u2f_cert_start, cert_ken_len);
     if (cert_ken_len > 0)
