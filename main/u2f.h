@@ -1,55 +1,70 @@
-#pragma once
+/* SPDX-License-Identifier: Apache-2.0 */
+#ifndef __U2F_H_INCLUDED__
+#define __U2F_H_INCLUDED__
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
+#include <apdu.h>
 #include <stdint.h>
-#include <stdbool.h>
-#include <mbedtls/sha256.h>
-#include <mbedtls/md.h>
-#include <mbedtls/ecdsa.h>
-#include <mbedtls/error.h>
 
-typedef enum {
-    U2fNotifyRegister,
-    U2fNotifyAuth,
-    U2fNotifyAuthSuccess,
-    U2fNotifyWink,
-    U2fNotifyConnect,
-    U2fNotifyDisconnect,
-    U2fNotifyError,
-} U2fNotifyEvent;
+#include "ctap-internal.h"
 
+// General constants
+#define U2F_EC_KEY_SIZE 32               // EC key size in bytes
+#define U2F_EC_PUB_KEY_SIZE 64           // EC public key size in bytes
+#define U2F_KH_SIZE sizeof(credential_id) // Key handle size
+#define U2F_MAX_ATT_CERT_SIZE 1152       // Max size of attestation certificate
+#define U2F_MAX_EC_SIG_SIZE 72           // Max size of DER coded EC signature
+#define U2F_CTR_SIZE 4                   // Size of counter field
+#define U2F_APPID_SIZE 32                // Size of application id
+#define U2F_CHAL_SIZE 32                 // Size of challenge
 
+// EC (uncompressed) point
+#define U2F_POINT_UNCOMPRESSED 0x04 // Uncompressed point format
 
-typedef struct  {
-    uint8_t device_key[0x20];
-    uint8_t cert_key[0x20];
-    uint32_t counter;
-    bool ready;
-    bool user_present;
-    //U2fEvtCallback callback;
-    void* context;
-    mbedtls_ecp_group group;
-}U2fData;
+typedef struct {
+  uint8_t pointFormat;        // Point type
+  uint8_t x[U2F_EC_KEY_SIZE]; // X-value
+  uint8_t y[U2F_EC_KEY_SIZE]; // Y-value
+} U2F_EC_POINT;
 
-typedef void (*U2fEvtCallback)(U2fNotifyEvent evt, void* context);
+// U2F native commands
+#define U2F_REGISTER 0x01     // Registration command
+#define U2F_AUTHENTICATE 0x02 // Authenticate/sign command
+#define U2F_VERSION 0x03      // Read version string command
+#define U2F_SELECT 0xA4
 
-bool u2f_init(U2fData* instance);
+// U2F_CMD_REGISTER command defines
+#define U2F_REGISTER_ID 0x05 // Version 2 registration identifier
 
-void u2f_free(U2fData* instance);
+typedef struct {
+  uint8_t chal[U2F_CHAL_SIZE];   // Challenge
+  uint8_t appId[U2F_APPID_SIZE]; // Application id
+} U2F_REGISTER_REQ;
 
-void u2f_set_event_callback(U2fData* instance, U2fEvtCallback callback, void* context);
+typedef struct {
+  uint8_t registerId;                              // Registration identifier (U2F_REGISTER_ID_V2)
+  U2F_EC_POINT pubKey;                             // Generated public key
+  uint8_t keyHandleLen;                            // Length of key handle
+  uint8_t keyHandleCertSig[U2F_KH_SIZE +           // Key handle
+                           U2F_MAX_ATT_CERT_SIZE + // Attestation certificate
+                           U2F_MAX_EC_SIG_SIZE];   // Registration signature
+} U2F_REGISTER_RESP;
 
-void u2f_confirm_user_present(U2fData* instance);
+// Authentication control byte
+#define U2F_AUTH_ENFORCE 0x03    // Enforce user presence and sign
+#define U2F_AUTH_CHECK_ONLY 0x07 // Check only
+#define U2F_AUTH_FLAG_TUP 0x01   // Test of user presence set
 
-uint16_t u2f_msg_parse(U2fData* instance, uint8_t* buf, uint16_t len);
+typedef struct {
+  uint8_t chal[U2F_CHAL_SIZE];    // Challenge
+  uint8_t appId[U2F_APPID_SIZE];  // Application id
+  uint8_t keyHandleLen;           // Length of key handle
+  uint8_t keyHandle[U2F_KH_SIZE]; // Key handle
+} U2F_AUTHENTICATE_REQ;
 
-void u2f_wink(U2fData* instance);
+typedef struct {
+  uint8_t flags;                    // U2F_AUTH_FLAG_ values
+  uint8_t ctr[U2F_CTR_SIZE];        // Counter field (big-endian)
+  uint8_t sig[U2F_MAX_EC_SIG_SIZE]; // Signature
+} U2F_AUTHENTICATE_RESP;
 
-void u2f_set_state(U2fData* instance, uint8_t state);
-
-#ifdef __cplusplus
-}
-#endif
+#endif // __U2F_H_INCLUDED__

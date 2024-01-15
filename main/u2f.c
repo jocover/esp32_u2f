@@ -1,432 +1,116 @@
+// SPDX-License-Identifier: Apache-2.0
 #include "u2f.h"
-#include "u2f_hid.h"
-#include "u2f_data.h"
-#include "esp_random.h"
-#include "esp_log.h"
+#include <apdu.h>
+#include <crypto-util.h>
+#include <device.h>
+#include <ecc.h>
+#include <fs.h>
+#include <memzero.h>
+#include <sha.h>
 #include <string.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
+#include "ctap-internal.h"
+#include "secret.h"
+#include "cose-key.h"
 
-#define TAG "U2f"
-#define WORKER_TAG TAG "Worker"
+int u2f_register(const CAPDU *capdu, RAPDU *rapdu) {
+  if (LC != 64) EXCEPT(SW_WRONG_LENGTH);
 
-#define U2F_CMD_REGISTER 0x01
-#define U2F_CMD_AUTHENTICATE 0x02
-#define U2F_CMD_VERSION 0x03
+  if (!is_nfc()) {
+    start_blinking(2);
+    if (get_touch_result() == TOUCH_NO) EXCEPT(SW_CONDITIONS_NOT_SATISFIED);
+    set_touch_result(TOUCH_NO);
+    stop_blinking();
+  }
 
-typedef enum {
-    U2fCheckOnly = 0x07, // "check-only" - only check key handle, don't send auth response
-    U2fEnforce =
-        0x03, // "enforce-user-presence-and-sign" - send auth response only if user is present
-    U2fDontEnforce =
-        0x08, // "dont-enforce-user-presence-and-sign" - send auth response even if user is missing
-} U2fAuthMode;
+  U2F_REGISTER_REQ *req = (U2F_REGISTER_REQ *) DATA;
+  U2F_REGISTER_RESP *resp = (U2F_REGISTER_RESP *) RDATA;
+  credential_id kh;
+  uint8_t digest[SHA256_DIGEST_LENGTH];
+  uint8_t pubkey[PUB_KEY_SIZE];
 
-#define U2F_HASH_SIZE 32
-#define U2F_NONCE_SIZE 32
-#define U2F_CHALLENGE_SIZE 32
-#define U2F_APP_ID_SIZE 32
+  memcpy(kh.rp_id_hash, req->appId, U2F_APPID_SIZE);
+  int err = generate_key_handle(&kh, pubkey, COSE_ALG_ES256, 0, CRED_PROTECT_VERIFICATION_OPTIONAL);
+  if (err < 0) return err;
 
-#define U2F_EC_KEY_SIZE 32
-#define U2F_EC_BIGNUM_SIZE 32
-#define U2F_EC_POINT_SIZE 65
+  // there are overlaps between req and resp
+  sha256_init();
+  sha256_update((uint8_t[]) {0x00}, 1);
+  sha256_update(req->appId, U2F_APPID_SIZE);
+  sha256_update(req->chal, U2F_CHAL_SIZE);
 
-typedef struct {
-    uint8_t format;
-    uint8_t xy[64];
-} __attribute__((packed)) U2fPubKey;
+  // build response
+  // REGISTER ID (1)
+  resp->registerId = U2F_REGISTER_ID;
+  // PUBLIC KEY (65)
+  resp->pubKey.pointFormat = U2F_POINT_UNCOMPRESSED;
+  memcpy(resp->pubKey.x, pubkey, PUB_KEY_SIZE); // accessing out of bounds is intentional.
+  // KEY HANDLE LENGTH (1)
+  resp->keyHandleLen = sizeof(credential_id);
+  // KEY HANDLE (128)
+  memcpy(resp->keyHandleCertSig, &kh, sizeof(credential_id));
+  // CERTIFICATE (var)
+  int cert_len = read_file(CTAP_CERT_FILE, resp->keyHandleCertSig + sizeof(credential_id), 0, U2F_MAX_ATT_CERT_SIZE);
+  if (cert_len < 0) return cert_len;
+  // SIG (var)
+  sha256_update((const uint8_t *) &kh, sizeof(credential_id));
+  sha256_update((const uint8_t *) &resp->pubKey, U2F_EC_PUB_KEY_SIZE + 1);
+  sha256_final(digest);
+  size_t signature_len = sign_with_device_key(digest, PRIVATE_KEY_LENGTH[SECP256R1],
+                                              resp->keyHandleCertSig + sizeof(credential_id) + cert_len);
+  LL = 67 + sizeof(credential_id) + cert_len + signature_len;
 
-typedef struct {
-    uint8_t len;
-    uint8_t hash[U2F_HASH_SIZE];
-    uint8_t nonce[U2F_NONCE_SIZE];
-} __attribute__((packed)) U2fKeyHandle;
-
-typedef struct {
-    uint8_t cla;
-    uint8_t ins;
-    uint8_t p1;
-    uint8_t p2;
-    uint8_t len[3];
-    uint8_t challenge[U2F_CHALLENGE_SIZE];
-    uint8_t app_id[U2F_APP_ID_SIZE];
-} __attribute__((packed)) U2fRegisterReq;
-
-typedef struct {
-    uint8_t reserved;
-    U2fPubKey pub_key;
-    U2fKeyHandle key_handle;
-    uint8_t cert[];
-} __attribute__((packed)) U2fRegisterResp;
-
-typedef struct {
-    uint8_t cla;
-    uint8_t ins;
-    uint8_t p1;
-    uint8_t p2;
-    uint8_t len[3];
-    uint8_t challenge[U2F_CHALLENGE_SIZE];
-    uint8_t app_id[U2F_APP_ID_SIZE];
-    U2fKeyHandle key_handle;
-} __attribute__((packed)) U2fAuthReq;
-
-typedef struct {
-    uint8_t user_present;
-    uint32_t counter;
-    uint8_t signature[];
-} __attribute__((packed)) U2fAuthResp;
-
-static const uint8_t ver_str[] = {"U2F_V2"};
-
-static const uint8_t state_no_error[] = {0x90, 0x00};
-static const uint8_t state_not_supported[] = {0x6D, 0x00};
-static const uint8_t state_user_missing[] = {0x69, 0x85};
-static const uint8_t state_wrong_data[] = {0x6A, 0x80};
-
-
-
-
-// Convert between 32-bit big-endian and native order
-static inline uint32_t lfs_frombe32(uint32_t a) {
-    return (((uint8_t*)&a)[0] << 24) |
-           (((uint8_t*)&a)[1] << 16) |
-           (((uint8_t*)&a)[2] <<  8) |
-           (((uint8_t*)&a)[3] <<  0);
-
+  return 0;
 }
 
-static int u2f_uecc_random_cb(void* context, uint8_t* dest, unsigned size) {
-    (void)context;
-    esp_fill_random(dest, size);
-    return 0;
+int u2f_authenticate(const CAPDU *capdu, RAPDU *rapdu) {
+  U2F_AUTHENTICATE_REQ *req = (U2F_AUTHENTICATE_REQ *) DATA;
+  U2F_AUTHENTICATE_RESP *resp = (U2F_AUTHENTICATE_RESP *) RDATA;
+  CTAP_auth_data auth_data;
+  size_t len;
+  ecc_key_t key; // TODO: cleanup
+
+  if (LC != sizeof(U2F_AUTHENTICATE_REQ)) EXCEPT(SW_WRONG_DATA); // required by FIDO Conformance Tool
+  if (req->keyHandleLen != sizeof(credential_id)) EXCEPT(SW_WRONG_LENGTH);
+  if (memcmp(req->appId, ((credential_id *)req->keyHandle)->rp_id_hash, U2F_APPID_SIZE) != 0) EXCEPT(SW_WRONG_DATA);
+  uint8_t err = verify_key_handle((credential_id *)req->keyHandle, &key);
+  if (err) EXCEPT(SW_WRONG_DATA);
+
+  if (P1 == U2F_AUTH_CHECK_ONLY) EXCEPT(SW_CONDITIONS_NOT_SATISFIED);
+  if (!is_nfc()) {
+    start_blinking(2);
+    if (get_touch_result() == TOUCH_NO) EXCEPT(SW_CONDITIONS_NOT_SATISFIED);
+    set_touch_result(TOUCH_NO);
+    stop_blinking();
+  }
+
+  len = sizeof(auth_data);
+  uint8_t flags = FLAGS_UP;
+  err = ctap_make_auth_data(req->appId, (uint8_t *) &auth_data, flags, NULL, 0, &len, COSE_ALG_ES256, false, 0);
+  if (err) EXCEPT(SW_CONDITIONS_NOT_SATISFIED);
+
+  sha256_init();
+  sha256_update((const uint8_t *) &auth_data, U2F_APPID_SIZE + 1 + sizeof(auth_data.sign_count));
+  sha256_update(req->chal, U2F_CHAL_SIZE);
+  sha256_final(req->appId);
+  memcpy(resp, &auth_data.flags, 1 + sizeof(auth_data.sign_count));
+  ecc_sign(SECP256R1, &key, req->appId, PRIVATE_KEY_LENGTH[SECP256R1], resp->sig);
+  memzero(&key, sizeof(key));
+  size_t signature_len = ecdsa_sig2ansi(U2F_EC_KEY_SIZE, resp->sig, resp->sig);
+  LL = signature_len + 5;
+
+  return 0;
 }
 
-void u2f_free(U2fData* U2F) {
-    mbedtls_ecp_group_free(&U2F->group);
-    free(U2F);
+int u2f_version(const CAPDU *capdu, RAPDU *rapdu) {
+  if (LC != 0) EXCEPT(SW_WRONG_LENGTH);
+  LL = 6;
+  memcpy(RDATA, "U2F_V2", 6);
+  return 0;
 }
 
-bool u2f_init(U2fData* U2F) {
-
-    if(u2f_data_cert_check() == false) {
-        ESP_LOGE(TAG, "Certificate load error");
-        return false;
-    }
-    if(u2f_data_cert_key_load(U2F->cert_key) == false) {
-        ESP_LOGE(TAG, "Certificate key load error");
-        return false;
-    }
-    if(u2f_data_key_load(U2F->device_key) == false) {
-        ESP_LOGE(TAG, "Devicd Key load error");
-        return false;  
-    }
-    if(u2f_data_cnt_read(&U2F->counter) == false) {
-        ESP_LOGE(TAG, "Counter loading error, resetting counter");
-        U2F->counter = 0;
-        if(u2f_data_cnt_write(0) == false) {
-            ESP_LOGE(TAG, "Counter write failed");
-            return false;
-        }
-    }
-
-    mbedtls_ecp_group_init(&U2F->group);
-    mbedtls_ecp_group_load(&U2F->group, MBEDTLS_ECP_DP_SECP256R1);
-
-    U2F->ready = true;
-    return true;
+int u2f_select(const CAPDU *capdu __attribute__((unused)), RAPDU *rapdu) {
+  LL = 6;
+  memcpy(RDATA, "U2F_V2", 6);
+  return 0;
 }
-
-void u2f_set_event_callback(U2fData* U2F, U2fEvtCallback callback, void* context) {
-
-    //U2F->callback = callback;
-    U2F->context = context;
-}
-
-void u2f_confirm_user_present(U2fData* U2F) {
-    U2F->user_present = true;
-}
-
-static uint8_t u2f_der_encode_int(uint8_t* der, uint8_t* val, uint8_t val_len) {
-    der[0] = 0x02; // Integer
-
-    uint8_t len = 2;
-    // Omit leading zeros
-    while(val[0] == 0 && val_len > 0) {
-        ++val;
-        --val_len;
-    }
-
-    // Check if integer is negative
-    if(val[0] > 0x7f) der[len++] = 0;
-
-    memcpy(der + len, val, val_len);
-    len += val_len;
-
-    der[1] = len - 2;
-    return len;
-}
-
-static uint8_t u2f_der_encode_signature(uint8_t* der, uint8_t* sig) {
-    der[0] = 0x30;
-
-    uint8_t len = 2;
-    len += u2f_der_encode_int(der + len, sig, U2F_HASH_SIZE);
-    len += u2f_der_encode_int(der + len, sig + U2F_HASH_SIZE, U2F_HASH_SIZE);
-
-    der[1] = len - 2;
-    return len;
-}
-
-static void u2f_ecc_sign(mbedtls_ecp_group* grp, const uint8_t* key, uint8_t* hash, uint8_t* signature) {
-    mbedtls_mpi r, s, d;
-
-    mbedtls_mpi_init(&r);
-    mbedtls_mpi_init(&s);
-    mbedtls_mpi_init(&d);
-
-    mbedtls_mpi_read_binary(&d, key, U2F_EC_KEY_SIZE);
-    mbedtls_ecdsa_sign(grp, &r, &s, &d, hash, U2F_HASH_SIZE, u2f_uecc_random_cb, NULL);
-    mbedtls_mpi_write_binary(&r, signature, U2F_EC_BIGNUM_SIZE);
-    mbedtls_mpi_write_binary(&s, signature + U2F_EC_BIGNUM_SIZE, U2F_EC_BIGNUM_SIZE);
-
-    mbedtls_mpi_free(&r);
-    mbedtls_mpi_free(&s);
-    mbedtls_mpi_free(&d);
-}
-
-static void u2f_ecc_compute_public_key(
-    mbedtls_ecp_group* grp,
-    const uint8_t* private_key,
-    U2fPubKey* public_key) {
-    mbedtls_ecp_point Q;
-    mbedtls_mpi d;
-    size_t olen;
-
-    mbedtls_ecp_point_init(&Q);
-    mbedtls_mpi_init(&d);
-
-    mbedtls_mpi_read_binary(&d, private_key, U2F_EC_KEY_SIZE);
-    mbedtls_ecp_mul(grp, &Q, &d, &grp->G, u2f_uecc_random_cb, NULL);
-    mbedtls_ecp_check_privkey(grp, &d);
-
-    mbedtls_ecp_point_write_binary(
-        grp, &Q, MBEDTLS_ECP_PF_UNCOMPRESSED, &olen, (unsigned char*)public_key, sizeof(U2fPubKey));
-
-    mbedtls_ecp_point_free(&Q);
-    mbedtls_mpi_free(&d);
-}
-
-///////////////////////////////////////////
-
-static uint16_t u2f_register(U2fData* U2F, uint8_t* buf) {
-    U2fRegisterReq* req = (U2fRegisterReq*)buf;
-    U2fRegisterResp* resp = (U2fRegisterResp*)buf;
-    U2fKeyHandle handle;
-    uint8_t private[U2F_EC_KEY_SIZE];
-    U2fPubKey pub_key;
-    uint8_t hash[U2F_HASH_SIZE];
-    uint8_t signature[U2F_EC_BIGNUM_SIZE * 2];
-    ESP_LOGD(TAG,"u2f_register");
-    if(u2f_data_check(false) == false) {
-        U2F->ready = false;
-        //if(U2F->callback != NULL) U2F->callback(U2fNotifyError, U2F->context);
-        memcpy(&buf[0], state_not_supported, 2);
-        ESP_LOGI(TAG,"u2f_data_check failed");
-        return 2;
-    }
-
-   // if(U2F->callback != NULL) U2F->callback(U2fNotifyRegister, U2F->context);
-   //TODO U2F->user_present 
-   U2F->user_present =true;
-    if(U2F->user_present == false) {
-        memcpy(&buf[0], state_user_missing, 2);
-         ESP_LOGI(TAG,"user_present false failed");
-        return 2;
-    }
-    U2F->user_present = false;
-
-    handle.len = U2F_HASH_SIZE * 2;
-
-    // Generate random nonce
-    esp_fill_random(handle.nonce, 32);
-
-    {
-        mbedtls_md_context_t hmac_ctx;
-        mbedtls_md_init(&hmac_ctx);
-        mbedtls_md_setup(&hmac_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-        mbedtls_md_hmac_starts(&hmac_ctx, U2F->device_key, sizeof(U2F->device_key));
-
-        // Generate private key
-        mbedtls_md_hmac_update(&hmac_ctx, req->app_id, sizeof(req->app_id));
-        mbedtls_md_hmac_update(&hmac_ctx, handle.nonce, sizeof(handle.nonce));
-        mbedtls_md_hmac_finish(&hmac_ctx, private);
-
-        mbedtls_md_hmac_reset(&hmac_ctx);
-
-        // Generate private key handle
-        mbedtls_md_hmac_update(&hmac_ctx, private, sizeof(private));
-        mbedtls_md_hmac_update(&hmac_ctx, req->app_id, sizeof(req->app_id));
-        mbedtls_md_hmac_finish(&hmac_ctx, handle.hash);
-    }
-
-    // Generate public key
-    u2f_ecc_compute_public_key(&U2F->group, private, &pub_key);
-
-    // Generate signature
-    {
-        uint8_t reserved_byte = 0;
-
-        mbedtls_sha256_context sha_ctx;
-
-        mbedtls_sha256_init(&sha_ctx);
-        mbedtls_sha256_starts(&sha_ctx, 0);
-
-        mbedtls_sha256_update(&sha_ctx, &reserved_byte, 1);
-        mbedtls_sha256_update(&sha_ctx, req->app_id, sizeof(req->app_id));
-        mbedtls_sha256_update(&sha_ctx, req->challenge, sizeof(req->challenge));
-        mbedtls_sha256_update(&sha_ctx, handle.hash, handle.len);
-        mbedtls_sha256_update(&sha_ctx, (uint8_t*)&pub_key, sizeof(U2fPubKey));
-
-        mbedtls_sha256_finish(&sha_ctx, hash);
-        mbedtls_sha256_free(&sha_ctx);
-    }
-
-    // Sign hash
-    u2f_ecc_sign(&U2F->group, U2F->cert_key, hash, signature);
-
-    // Encode response message
-    resp->reserved = 0x05;
-    memcpy(&(resp->pub_key), &pub_key, sizeof(U2fPubKey));
-    memcpy(&(resp->key_handle), &handle, sizeof(U2fKeyHandle));
-    uint32_t cert_len = u2f_data_cert_load(resp->cert);
-    uint8_t signature_len = u2f_der_encode_signature(resp->cert + cert_len, signature);
-    memcpy(resp->cert + cert_len + signature_len, state_no_error, 2);
-
-    return (sizeof(U2fRegisterResp) + cert_len + signature_len + 2);
-}
-
-static uint16_t u2f_authenticate(U2fData* U2F, uint8_t* buf) {
-    U2fAuthReq* req = (U2fAuthReq*)buf;
-    U2fAuthResp* resp = (U2fAuthResp*)buf;
-    uint8_t priv_key[U2F_EC_KEY_SIZE];
-    uint8_t mac_control[32];
-    uint8_t flags = 0;
-    uint8_t hash[U2F_HASH_SIZE];
-    uint8_t signature[U2F_HASH_SIZE * 2];
-    uint32_t be_u2f_counter;
-
-    if(u2f_data_check(false) == false) {
-        U2F->ready = false;
-        //if(U2F->callback != NULL) U2F->callback(U2fNotifyError, U2F->context);
-        memcpy(&buf[0], state_not_supported, 2);
-        return 2;
-    }
-
-    //if(U2F->callback != NULL) U2F->callback(U2fNotifyAuth, U2F->context);
-    //TODO GPIO button check
-    U2F->user_present=true;
-    if(U2F->user_present == true) {
-        flags |= 1;
-    } else {
-        if(req->p1 == U2fEnforce) {
-            memcpy(&buf[0], state_user_missing, 2);
-            return 2;
-        }
-    }
-    U2F->user_present = false;
-
-    // The 4 byte counter is represented in big endian. Increment it before use
-    be_u2f_counter = lfs_frombe32(U2F->counter + 1);
-
-    // Generate hash
-    {
-        mbedtls_sha256_context sha_ctx;
-
-        mbedtls_sha256_init(&sha_ctx);
-        mbedtls_sha256_starts(&sha_ctx, 0);
-
-        mbedtls_sha256_update(&sha_ctx, req->app_id, sizeof(req->app_id));
-        mbedtls_sha256_update(&sha_ctx, &flags, 1);
-        mbedtls_sha256_update(&sha_ctx, (uint8_t*)&(be_u2f_counter), sizeof(be_u2f_counter));
-        mbedtls_sha256_update(&sha_ctx, req->challenge, sizeof(req->challenge));
-
-        mbedtls_sha256_finish(&sha_ctx, hash);
-        mbedtls_sha256_free(&sha_ctx);
-    }
-
-    {
-        mbedtls_md_context_t hmac_ctx;
-        mbedtls_md_init(&hmac_ctx);
-        mbedtls_md_setup(&hmac_ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-        mbedtls_md_hmac_starts(&hmac_ctx, U2F->device_key, sizeof(U2F->device_key));
-
-        // Recover private key
-        mbedtls_md_hmac_update(&hmac_ctx, req->app_id, sizeof(req->app_id));
-        mbedtls_md_hmac_update(
-            &hmac_ctx, req->key_handle.nonce, sizeof(req->key_handle.nonce));
-        mbedtls_md_hmac_finish(&hmac_ctx, priv_key);
-
-        mbedtls_md_hmac_reset(&hmac_ctx);
-
-        // Generate and verify private key handle
-        mbedtls_md_hmac_update(&hmac_ctx, priv_key, sizeof(priv_key));
-        mbedtls_md_hmac_update(&hmac_ctx, req->app_id, sizeof(req->app_id));
-        mbedtls_md_hmac_finish(&hmac_ctx, mac_control);
-    }
-
-    if(memcmp(req->key_handle.hash, mac_control, sizeof(mac_control)) != 0) {
-        ESP_LOGD(TAG, "Wrong handle!");
-        memcpy(&buf[0], state_wrong_data, 2);
-        return 2;
-    }
-
-    if(req->p1 == U2fCheckOnly) { // Check-only: don't need to send full response
-        memcpy(&buf[0], state_user_missing, 2);
-        return 2;
-    }
-
-    // Sign hash
-    u2f_ecc_sign(&U2F->group, priv_key, hash, signature);
-
-    resp->user_present = flags;
-    resp->counter = be_u2f_counter;
-    uint8_t signature_len = u2f_der_encode_signature(resp->signature, signature);
-    memcpy(resp->signature + signature_len, state_no_error, 2);
-
-    U2F->counter++;
-    ESP_LOGD(TAG, "Counter: %lu", U2F->counter);
-    u2f_data_cnt_write(U2F->counter);
-
-    //if(U2F->callback != NULL) U2F->callback(U2fNotifyAuthSuccess, U2F->context);
-
-    return (sizeof(U2fAuthResp) + signature_len + 2);
-}
-
-uint16_t u2f_msg_parse(U2fData* U2F, uint8_t* buf, uint16_t len) {
-
-    if(!U2F->ready) return 0;
-    if((buf[0] != 0x00) && (len < 5)) return 0;
-    ESP_LOGD(TAG,"u2f_msg_parse:%02x",buf[1]);
-    if(buf[1] == U2F_CMD_REGISTER) { // Register request
-        return u2f_register(U2F, buf);
-
-    } else if(buf[1] == U2F_CMD_AUTHENTICATE) { // Authenticate request
-        return u2f_authenticate(U2F, buf);
-
-    } else if(buf[1] == U2F_CMD_VERSION) { // Get U2F version string
-        memcpy(&buf[0], ver_str, 6);
-        memcpy(&buf[6], state_no_error, 2);
-        return 8;
-    } else {
-        memcpy(&buf[0], state_not_supported, 2);
-        return 2;
-    }
-    
-    return 0;
-}
-
-void u2f_wink(U2fData* U2F) {
-    //if(U2F->callback != NULL) U2F->callback(U2fNotifyWink, U2F->context);
-}
-

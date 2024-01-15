@@ -12,12 +12,8 @@
 #include "class/hid/hid_device.h"
 #include "driver/gpio.h"
 #include "sdkconfig.h"
-#include "u2f_hid.h"
-#include "u2f.h"
-#include "nvs_flash.h"
+#include "device.h"
 
-static U2fHid u2f_hid;
-static U2fData u2f_data;
 
 #define APP_BUTTON (GPIO_NUM_0) // Use BOOT signal by default
 static const char *TAG = "main";
@@ -110,7 +106,7 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 // received data on OUT endpoint ( Report ID = 0, Type = 0 )
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize)
 {
-    u2f_hid_recv_data(&u2f_hid, buffer, bufsize);
+    device_recv_data(buffer, bufsize);
 }
 
 /********* Application ***************/
@@ -118,24 +114,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 void app_main(void)
 {
 
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND)
-    {
-        // NVS partition was truncated and needs to be erased
-        // Retry nvs_flash_init
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(err);
-
-    if (u2f_init(&u2f_data))
-    {
-        u2f_hid_init(&u2f_hid, &u2f_data);
-    }
-    else
-    {
-        ESP_LOGE(TAG, "u2f init failed");
-    }
+    device_init();
 
     ESP_LOGI(TAG, "USB initialization");
     const tinyusb_config_t tusb_cfg = {
@@ -151,7 +130,7 @@ void app_main(void)
 
     while (1)
     {
-        u2f_task(&u2f_hid);
+        device_loop(0);
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
