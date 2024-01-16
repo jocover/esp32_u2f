@@ -12,11 +12,9 @@
 #include "esp_partition.h"
 #include <memzero.h>
 #include "ctap.h"
+#include "sdkconfig.h"
 
 #define NVS_PARTITION_LABEL "lfs"
-
-#define BLINK_GPIO (GPIO_NUM_15)
-#define BUTTON_GPIO (GPIO_NUM_0) // Use BOOT signal by default
 
 extern const unsigned char u2f_cert_start[] asm("_binary_u2f_cert_bin_start");
 extern const unsigned char u2f_cert_end[] asm("_binary_u2f_cert_bin_end");
@@ -27,6 +25,7 @@ extern const unsigned char u2f_cert_key_end[] asm("_binary_u2f_cert_key_bin_end"
 static SemaphoreHandle_t hid_tx_requested = NULL;
 static SemaphoreHandle_t hid_tx_done = NULL;
 static QueueHandle_t hid_queue = NULL;
+static TaskHandle_t led_task = NULL;
 
 volatile static uint8_t touch_result;
 static uint32_t last_blink = UINT32_MAX, blink_timeout, blink_interval;
@@ -155,13 +154,82 @@ void littlefs_init()
     }
 }
 
+#ifdef CONFIG_BLINK_LED_STRIP
+
+static led_strip_handle_t led_strip;
+
+static void blink_led(uint8_t s_led_state)
+{
+    /* If the addressable LED is enabled */
+    if (s_led_state)
+    {
+        /* Set the LED pixel using RGB from 0 (0%) to 255 (100%) for each color */
+        led_strip_set_pixel(led_strip, 0, 16, 16, 16);
+        /* Refresh the strip to send data */
+        led_strip_refresh(led_strip);
+    }
+    else
+    {
+        /* Set all LED off to clear all pixels */
+        led_strip_clear(led_strip);
+    }
+}
+
+static void configure_led(void)
+{
+    ESP_LOGI(TAG, "Example configured to blink addressable LED!");
+    /* LED strip initialization with the GPIO and pixels number*/
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = CONFIG_BLINK_GPIO,
+        .max_leds = 1, // at least one LED on board
+    };
+#if CONFIG_BLINK_LED_STRIP_BACKEND_RMT
+    led_strip_rmt_config_t rmt_config = {
+        .resolution_hz = 10 * 1000 * 1000, // 10MHz
+        .flags.with_dma = false,
+    };
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+#elif CONFIG_BLINK_LED_STRIP_BACKEND_SPI
+    led_strip_spi_config_t spi_config = {
+        .spi_bus = SPI2_HOST,
+        .flags.with_dma = true,
+    };
+    ESP_ERROR_CHECK(led_strip_new_spi_device(&strip_config, &spi_config, &led_strip));
+#else
+#error "unsupported LED strip backend"
+#endif
+    /* Set all LED off to clear all pixels */
+    led_strip_clear(led_strip);
+}
+
+#elif CONFIG_BLINK_LED_GPIO
+
+static void blink_led(uint8_t s_led_state)
+{
+    /* Set the GPIO level according to the state (LOW or HIGH)*/
+    gpio_set_level(CONFIG_BLINK_GPIO, s_led_state);
+}
+
+static void configure_led(void)
+{
+    ESP_LOGI(TAG, "Example configured to blink GPIO LED!");
+    gpio_reset_pin(CONFIG_BLINK_GPIO);
+    /* Set the GPIO as a push/pull output */
+    gpio_set_direction(CONFIG_BLINK_GPIO, GPIO_MODE_OUTPUT);
+}
+
+#else
+static void blink_led(uint8_t s_led_state)();
+static void configure_led(void){};
+#endif
+
 void device_init(void)
 {
     littlefs_init();
-    gpio_reset_pin(BLINK_GPIO);
-    /* Set the GPIO as a push/pull output */
-    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
 
+    configure_led();
+
+#ifdef CONFIG_BUTTON_ENABLE
     const gpio_config_t boot_button_config = {
         .pin_bit_mask = BIT64(BUTTON_GPIO),
         .mode = GPIO_MODE_INPUT,
@@ -171,7 +239,7 @@ void device_init(void)
     };
 
     ESP_ERROR_CHECK(gpio_config(&boot_button_config));
-
+#endif
     hid_queue = xQueueCreate(32, HID_RPT_SIZE);
     hid_tx_requested = xSemaphoreCreateBinary();
     hid_tx_done = xSemaphoreCreateBinary();
@@ -187,6 +255,8 @@ void device_init(void)
         ctap_install_cert(u2f_cert_start, u2f_cert_end - u2f_cert_start);
         ctap_install_private_key(u2f_cert_key_start, u2f_cert_key_end - u2f_cert_key_start);
     }
+
+    xTaskCreate(device_update_led_btn, "led_task", configMINIMAL_STACK_SIZE * 2, NULL, 10, &led_task);
 
     ESP_LOGI(TAG, "u2f device init done");
 }
@@ -215,7 +285,6 @@ void device_loop(uint8_t has_touch)
     }
 
     CTAPHID_Loop(0);
-    device_update_led();
 }
 
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, /*uint16_t*/ uint8_t len)
@@ -272,12 +341,6 @@ uint8_t is_nfc(void)
 
 uint8_t get_touch_result(void)
 {
-    // TODO fake touch button
-    if (!gpio_get_level(BUTTON_GPIO))
-    {
-
-        touch_result = TOUCH_SHORT;
-    }
 
     return touch_result;
 }
@@ -293,13 +356,13 @@ uint32_t device_get_tick(void)
 void led_off(void)
 {
     /* Set the GPIO level according to the state (LOW or HIGH)*/
-    gpio_set_level(BLINK_GPIO, 0);
+    blink_led(0);
 }
 
 void led_on(void)
 {
     /* Set the GPIO level according to the state (LOW or HIGH)*/
-    gpio_set_level(BLINK_GPIO, 1);
+    blink_led(1);
 }
 
 static void toggle_led(void)
@@ -316,15 +379,29 @@ static void toggle_led(void)
     }
 }
 
-void device_update_led(void)
+void device_update_led_btn(void *pvParam)
 {
-    uint32_t now = device_get_tick();
-    if (now > blink_timeout)
-        stop_blinking();
-    if (now >= last_blink && now - last_blink >= blink_interval)
+    while (1)
     {
-        last_blink = now;
-        toggle_led();
+        uint32_t now = device_get_tick();
+        if (now > blink_timeout)
+            stop_blinking();
+        if (now >= last_blink && now - last_blink >= blink_interval)
+        {
+            last_blink = now;
+            toggle_led();
+        }
+
+#ifdef CONFIG_BUTTON_ENABLE     
+        if (!gpio_get_level(BUTTON_GPIO))
+        {
+            set_touch_result(TOUCH_SHORT);
+        }
+#else
+        // TODO fake touch button
+        set_touch_result(TOUCH_SHORT);
+#endif
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -379,7 +456,7 @@ uint8_t wait_for_user_presence(uint8_t entry)
             break;
         if (CTAPHID_Loop(wait_status != WAIT_CCID) == LOOP_CANCEL)
         {
-            DBG_MSG("Cancelled by host\n");
+            DBG_MSG("Cancelled by host");
             if (wait_status != WAIT_DEEP)
             {
                 stop_blinking();

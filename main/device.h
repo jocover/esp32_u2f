@@ -100,7 +100,7 @@ uint8_t is_nfc(void);
 void set_nfc_state(uint8_t state);
 uint8_t get_touch_result(void);
 void set_touch_result(uint8_t result);
-void device_update_led(void);
+void device_update_led_btn(void *pvParam);
 /**
  * Blink for several time
  * @param sec duration, 0 for infinite
