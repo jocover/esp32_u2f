@@ -25,7 +25,7 @@ extern const unsigned char u2f_cert_key_end[] asm("_binary_u2f_cert_key_bin_end"
 static SemaphoreHandle_t hid_tx_requested = NULL;
 static SemaphoreHandle_t hid_tx_done = NULL;
 static QueueHandle_t hid_queue = NULL;
-static TaskHandle_t led_task = NULL;
+static TaskHandle_t led_btn_task = NULL;
 
 volatile static uint8_t touch_result;
 static uint32_t last_blink = UINT32_MAX, blink_timeout, blink_interval;
@@ -231,7 +231,7 @@ void device_init(void)
 
 #ifdef CONFIG_BUTTON_ENABLE
     const gpio_config_t boot_button_config = {
-        .pin_bit_mask = BIT64(BUTTON_GPIO),
+        .pin_bit_mask = BIT64(CONFIG_BUTTON_GPIO),
         .mode = GPIO_MODE_INPUT,
         .intr_type = GPIO_INTR_DISABLE,
         .pull_up_en = true,
@@ -256,7 +256,7 @@ void device_init(void)
         ctap_install_private_key(u2f_cert_key_start, u2f_cert_key_end - u2f_cert_key_start);
     }
 
-    xTaskCreate(device_update_led_btn, "led_task", configMINIMAL_STACK_SIZE * 2, NULL, 10, &led_task);
+    xTaskCreate(device_update_led_btn, "led_btn_task", configMINIMAL_STACK_SIZE * 2, NULL, 10, &led_btn_task);
 
     ESP_LOGI(TAG, "u2f device init done");
 }
@@ -285,6 +285,8 @@ void device_loop(uint8_t has_touch)
     }
 
     CTAPHID_Loop(0);
+
+    //ESP_LOGI(TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
 }
 
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, /*uint16_t*/ uint8_t len)
@@ -392,8 +394,8 @@ void device_update_led_btn(void *pvParam)
             toggle_led();
         }
 
-#ifdef CONFIG_BUTTON_ENABLE     
-        if (!gpio_get_level(BUTTON_GPIO))
+#ifdef CONFIG_BUTTON_ENABLE
+        if (!gpio_get_level(CONFIG_BUTTON_GPIO))
         {
             set_touch_result(TOUCH_SHORT);
         }
