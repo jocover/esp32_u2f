@@ -1282,10 +1282,10 @@ static uint8_t ctap_get_info(CborEncoder *encoder) {
     CHECK_CBOR_RET(ret);
     ret = cbor_encode_boolean(&option_map, true);
     CHECK_CBOR_RET(ret);
-    ret = cbor_encode_text_stringz(&option_map, "clientPin");
-    CHECK_CBOR_RET(ret);
-    ret = cbor_encode_boolean(&option_map, has_pin());
-    CHECK_CBOR_RET(ret);
+    //ret = cbor_encode_text_stringz(&option_map, "clientPin");
+    //CHECK_CBOR_RET(ret);
+    //ret = cbor_encode_boolean(&option_map, 0);
+    //CHECK_CBOR_RET(ret);
     ret = cbor_encode_text_stringz(&option_map, "largeBlobs");
     CHECK_CBOR_RET(ret);
     ret = cbor_encode_boolean(&option_map, true);
@@ -1351,7 +1351,7 @@ static uint8_t ctap_get_info(CborEncoder *encoder) {
   // algorithms
   ret = cbor_encode_int(&map, GI_RESP_ALGORITHMS);
   CHECK_CBOR_RET(ret);
-  ret = cbor_encoder_create_array(&map, &array, ctap_sm2_attr.enabled ? 3 : 2);
+  ret = cbor_encoder_create_array(&map, &array, ctap_sm2_attr.enabled ? 2 : 1);
   CHECK_CBOR_RET(ret);
   ret = cbor_encoder_create_map(&array, &sub_map, 2);
   CHECK_CBOR_RET(ret);
