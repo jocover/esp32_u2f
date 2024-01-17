@@ -3,5 +3,4 @@ dependencies:
   espressif/tinyusb: "~0.14.3"
   espressif/esp_tinyusb: "~1.4.2"
   espressif/cbor: "~0.6.0"
-  espressif/led_strip: "~2.5.2"
   idf: "^5.0"

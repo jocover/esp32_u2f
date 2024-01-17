@@ -9,6 +9,7 @@
 #include "lfs.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
+#include "driver/gptimer.h"
 #include "esp_partition.h"
 #include <memzero.h>
 #include "ctap.h"
@@ -25,13 +26,18 @@ extern const unsigned char u2f_cert_key_end[] asm("_binary_u2f_cert_key_bin_end"
 static SemaphoreHandle_t hid_tx_requested = NULL;
 static SemaphoreHandle_t hid_tx_done = NULL;
 static QueueHandle_t hid_queue = NULL;
-static TaskHandle_t led_btn_task = NULL;
 
 volatile static uint8_t touch_result;
-static uint32_t last_blink = UINT32_MAX, blink_timeout, blink_interval;
 
-static enum { ON,
-              OFF } led_status;
+typedef struct
+{
+    int8_t blink_status;
+    uint32_t blink_timeout;
+    uint32_t blink_conter;
+} led_blink_status;
+static led_blink_status led_status;
+static gptimer_handle_t gptimer = NULL;
+
 typedef enum
 {
     WAIT_NONE = 1,
@@ -43,23 +49,20 @@ typedef enum
 } wait_status_t;
 volatile static wait_status_t wait_status = WAIT_NONE; // WAIT_NONE is not 0, hence inited
 
-uint8_t device_is_blinking(void) { return last_blink != UINT32_MAX; }
+uint8_t device_is_blinking(void) { return led_status.blink_timeout != UINT32_MAX; }
 
 // fork git version 8a47c6685c776723a424e311c4077186f4a30f8e
 
 #define TAG "device"
 
-#define LOOKAHEAD_SIZE 16
-#define WRITE_SIZE 8
-#define READ_SIZE 1
+#define LOOKAHEAD_SIZE 128
+#define WRITE_SIZE 128
+#define READ_SIZE 128
 
 #define FLASH_PAGE_SIZE 0x1000
 #define FLASH_SIZE 0x100000
 
 static struct lfs_config config;
-static uint8_t read_buffer[LFS_CACHE_SIZE];
-static uint8_t prog_buffer[LFS_CACHE_SIZE];
-static alignas(4) uint8_t lookahead_buffer[LOOKAHEAD_SIZE];
 extern uint8_t _lfs_begin;
 
 static esp_partition_t *partition;
@@ -71,7 +74,7 @@ int littlefs_api_read(const struct lfs_config *c, lfs_block_t block,
     esp_err_t err = esp_partition_read(partition, part_off, buffer, size);
     if (err)
     {
-        ERR_MSG("failed to read addr %08x, size %08x, err %d", part_off, size, err);
+        // ESP_LOGE(TAG,"failed to read addr %08x, size %08x, err %d", part_off, size, err);
         return LFS_ERR_IO;
     }
     return 0;
@@ -84,7 +87,7 @@ int littlefs_api_prog(const struct lfs_config *c, lfs_block_t block,
     esp_err_t err = esp_partition_write(partition, part_off, buffer, size);
     if (err)
     {
-        ERR_MSG("failed to write addr %08x, size %08x, err %d", part_off, size, err);
+        // ESP_LOGE(TAG,"failed to write addr %08x, size %08x, err %d", part_off, size, err);
         return LFS_ERR_IO;
     }
     return 0;
@@ -96,7 +99,7 @@ int littlefs_api_erase(const struct lfs_config *c, lfs_block_t block)
     esp_err_t err = esp_partition_erase_range(partition, part_off, c->block_size);
     if (err)
     {
-        ERR_MSG("failed to erase addr %08x, size %08x, err %d", part_off, c->block_size, err);
+        // ESP_LOGE(TAG,"failed to erase addr %08x, size %08x, err %d", part_off, c->block_size, err);
         return LFS_ERR_IO;
     }
     return 0;
@@ -119,13 +122,11 @@ void littlefs_init()
     config.prog_size = WRITE_SIZE;
     config.block_size = FLASH_PAGE_SIZE;
     config.block_count = FLASH_SIZE / FLASH_PAGE_SIZE;
-    config.block_cycles = 100000;
+    config.block_cycles = 512;
     config.cache_size = LFS_CACHE_SIZE;
     config.lookahead_size = LOOKAHEAD_SIZE;
-    config.read_buffer = read_buffer;
-    config.prog_buffer = prog_buffer;
-    config.lookahead_buffer = lookahead_buffer;
-    DBG_MSG("Flash %u blocks (%u bytes)\r\n", config.block_count, FLASH_PAGE_SIZE);
+
+    ESP_LOGI(TAG, "Flash %lu blocks (%d bytes)", config.block_count, FLASH_PAGE_SIZE);
 
     partition = (esp_partition_t *)esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_UNDEFINED, "lfs");
     if (!partition)
@@ -143,91 +144,104 @@ void littlefs_init()
             return;
     }
     // should happen for the first boot
-    DBG_MSG("Formating data area...\r\n");
+    ESP_LOGW(TAG, "Formating data area...");
     fs_format(&config);
     err = fs_mount(&config);
     if (err)
     {
-        ESP_LOGI(TAG, "Failed to mount FS after formating\r\n");
+        ESP_LOGI(TAG, "Failed to mount FS after formating");
         for (;;)
             ;
     }
 }
 
-#ifdef CONFIG_BLINK_LED_STRIP
-
-static led_strip_handle_t led_strip;
-
-static void blink_led(uint8_t s_led_state)
+static bool IRAM_ATTR toggle_led(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_data)
 {
-    /* If the addressable LED is enabled */
-    if (s_led_state)
+    led_blink_status *status = (led_blink_status *)user_data;
+
+    if (status->blink_timeout > status->blink_conter || status->blink_timeout == UINT32_MAX)
     {
-        /* Set the LED pixel using RGB from 0 (0%) to 255 (100%) for each color */
-        led_strip_set_pixel(led_strip, 0, 16, 16, 16);
-        /* Refresh the strip to send data */
-        led_strip_refresh(led_strip);
+
+        status->blink_status = !status->blink_status;
     }
     else
     {
-        /* Set all LED off to clear all pixels */
-        led_strip_clear(led_strip);
+        status->blink_status = 0;
     }
+
+    gpio_set_level(CONFIG_BLINK_GPIO, status->blink_status);
+
+    if (status->blink_timeout != UINT32_MAX)
+    {
+        status->blink_conter += edata->alarm_value / 1000; // ns to ms
+    }
+    return 0;
 }
 
-static void configure_led(void)
+void init_blinking()
 {
-    ESP_LOGI(TAG, "Example configured to blink addressable LED!");
-    /* LED strip initialization with the GPIO and pixels number*/
-    led_strip_config_t strip_config = {
-        .strip_gpio_num = CONFIG_BLINK_GPIO,
-        .max_leds = 1, // at least one LED on board
-    };
-#if CONFIG_BLINK_LED_STRIP_BACKEND_RMT
-    led_strip_rmt_config_t rmt_config = {
-        .resolution_hz = 10 * 1000 * 1000, // 10MHz
-        .flags.with_dma = false,
-    };
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
-#elif CONFIG_BLINK_LED_STRIP_BACKEND_SPI
-    led_strip_spi_config_t spi_config = {
-        .spi_bus = SPI2_HOST,
-        .flags.with_dma = true,
-    };
-    ESP_ERROR_CHECK(led_strip_new_spi_device(&strip_config, &spi_config, &led_strip));
-#else
-#error "unsupported LED strip backend"
-#endif
-    /* Set all LED off to clear all pixels */
-    led_strip_clear(led_strip);
-}
 
-#elif CONFIG_BLINK_LED_GPIO
-
-static void blink_led(uint8_t s_led_state)
-{
-    /* Set the GPIO level according to the state (LOW or HIGH)*/
-    gpio_set_level(CONFIG_BLINK_GPIO, s_led_state);
-}
-
-static void configure_led(void)
-{
-    ESP_LOGI(TAG, "Example configured to blink GPIO LED!");
     gpio_reset_pin(CONFIG_BLINK_GPIO);
     /* Set the GPIO as a push/pull output */
     gpio_set_direction(CONFIG_BLINK_GPIO, GPIO_MODE_OUTPUT);
+
+    gptimer_config_t timer_config = {
+        .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+        .direction = GPTIMER_COUNT_UP,
+        .resolution_hz = 1 * 1000 * 1000, // 1MHz, 1 tick = 1us
+    };
+    ESP_ERROR_CHECK(gptimer_new_timer(&timer_config, &gptimer));
+
+    gptimer_event_callbacks_t cbs = {
+        .on_alarm = toggle_led,
+    };
+
+    ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, &led_status));
+    ESP_ERROR_CHECK(gptimer_enable(gptimer));
+
+    gptimer_alarm_config_t alarm_config = {
+        .reload_count = 0,
+        .alarm_count = 1000000, // to ns
+        .flags.auto_reload_on_alarm = true,
+    };
+
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
+
+    ESP_ERROR_CHECK(gptimer_start(gptimer));
 }
 
-#else
-static void blink_led(uint8_t s_led_state)();
-static void configure_led(void){};
-#endif
+void start_blinking_interval(uint8_t sec, uint32_t interval)
+{
+
+    if (sec == 0)
+    {
+        led_status.blink_timeout = UINT32_MAX;
+    }
+    else
+    {
+        led_status.blink_conter = 0;
+        led_status.blink_timeout = sec * 1000;
+    }
+    gptimer_alarm_config_t alarm_config = {
+        .reload_count = 0,
+        .alarm_count = interval * 1000,
+        .flags.auto_reload_on_alarm = true,
+    };
+
+    ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config));
+}
+
+void stop_blinking(void)
+{
+    led_status.blink_timeout = 0;
+    led_status.blink_conter = 0;
+}
 
 void device_init(void)
 {
     littlefs_init();
 
-    configure_led();
+    init_blinking();
 
 #ifdef CONFIG_BUTTON_ENABLE
     const gpio_config_t boot_button_config = {
@@ -255,8 +269,6 @@ void device_init(void)
         ctap_install_cert(u2f_cert_start, u2f_cert_end - u2f_cert_start);
         ctap_install_private_key(u2f_cert_key_start, u2f_cert_key_end - u2f_cert_key_start);
     }
-
-    xTaskCreate(device_update_led_btn, "led_btn_task", configMINIMAL_STACK_SIZE * 2, NULL, 10, &led_btn_task);
 
     ESP_LOGI(TAG, "u2f device init done");
 }
@@ -286,7 +298,7 @@ void device_loop(uint8_t has_touch)
 
     CTAPHID_Loop(0);
 
-    //ESP_LOGI(TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
+    // ESP_LOGI(TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
 }
 
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, /*uint16_t*/ uint8_t len)
@@ -343,6 +355,16 @@ uint8_t is_nfc(void)
 
 uint8_t get_touch_result(void)
 {
+#ifdef CONFIG_BUTTON_ENABLE
+
+    if (!gpio_get_level(CONFIG_BUTTON_GPIO))
+    {
+        set_touch_result(TOUCH_SHORT);
+    }
+
+#else
+    set_touch_result(TOUCH_SHORT);
+#endif
 
     return touch_result;
 }
@@ -355,88 +377,12 @@ uint32_t device_get_tick(void)
     return esp_timer_get_time() / 1000;
 }
 
-void led_off(void)
-{
-    /* Set the GPIO level according to the state (LOW or HIGH)*/
-    blink_led(0);
-}
-
-void led_on(void)
-{
-    /* Set the GPIO level according to the state (LOW or HIGH)*/
-    blink_led(1);
-}
-
-static void toggle_led(void)
-{
-    if (led_status == ON)
-    {
-        led_off();
-        led_status = OFF;
-    }
-    else
-    {
-        led_on();
-        led_status = ON;
-    }
-}
-
-void device_update_led_btn(void *pvParam)
-{
-    while (1)
-    {
-        uint32_t now = device_get_tick();
-        if (now > blink_timeout)
-            stop_blinking();
-        if (now >= last_blink && now - last_blink >= blink_interval)
-        {
-            last_blink = now;
-            toggle_led();
-        }
-
-#ifdef CONFIG_BUTTON_ENABLE
-        if (!gpio_get_level(CONFIG_BUTTON_GPIO))
-        {
-            set_touch_result(TOUCH_SHORT);
-        }
-#else
-        // TODO fake touch button
-        set_touch_result(TOUCH_SHORT);
-#endif
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-void start_blinking_interval(uint8_t sec, uint32_t interval)
-{
-    if (device_is_blinking())
-        return;
-    last_blink = device_get_tick();
-    blink_interval = interval;
-    if (sec == 0)
-    {
-        blink_timeout = UINT32_MAX;
-    }
-    else
-    {
-        blink_timeout = last_blink + sec * 1000;
-    }
-    toggle_led();
-}
-
-void stop_blinking(void)
-{
-    last_blink = UINT32_MAX;
-    led_off();
-    led_status = OFF;
-}
-
 uint8_t wait_for_user_presence(uint8_t entry)
 {
     start_blinking(0);
     uint32_t start = device_get_tick();
     int32_t last = start;
-    DBG_MSG("start %u\n", start);
+    ESP_LOGD(TAG, "start %lu\n", start);
     wait_status_t shallow = wait_status;
     if (wait_status == WAIT_NONE)
     {
@@ -458,7 +404,7 @@ uint8_t wait_for_user_presence(uint8_t entry)
             break;
         if (CTAPHID_Loop(wait_status != WAIT_CCID) == LOOP_CANCEL)
         {
-            DBG_MSG("Cancelled by host");
+            ESP_LOGD(TAG, "Cancelled by host");
             if (wait_status != WAIT_DEEP)
             {
                 stop_blinking();
@@ -471,7 +417,7 @@ uint8_t wait_for_user_presence(uint8_t entry)
         uint32_t now = device_get_tick();
         if (now - start >= 30000)
         {
-            DBG_MSG("timeout at %u\n", now);
+            ESP_LOGD(TAG, "timeout at %lu", now);
             if (wait_status != WAIT_DEEP)
                 stop_blinking();
             wait_status = shallow;
