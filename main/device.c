@@ -14,6 +14,7 @@
 #include <memzero.h>
 #include "ctap.h"
 #include "sdkconfig.h"
+#include "secret.h"
 
 #define NVS_PARTITION_LABEL "lfs"
 
@@ -22,6 +23,9 @@ extern const unsigned char u2f_cert_end[] asm("_binary_u2f_cert_bin_end");
 
 extern const unsigned char u2f_cert_key_start[] asm("_binary_u2f_cert_key_bin_start");
 extern const unsigned char u2f_cert_key_end[] asm("_binary_u2f_cert_key_bin_end");
+
+extern const unsigned char u2f_aaguid_start[] asm("_binary_u2f_aaguid_bin_start");
+extern const unsigned char u2f_aaguid_end[] asm("_binary_u2f_aaguid_bin_end");
 
 static SemaphoreHandle_t hid_tx_requested = NULL;
 static SemaphoreHandle_t hid_tx_done = NULL;
@@ -362,7 +366,9 @@ uint8_t get_touch_result(void)
         set_touch_result(TOUCH_SHORT);
     }
 
+    cp_begin_using_uv_auth_token(1);
 #else
+    cp_begin_using_uv_auth_token(1);
     set_touch_result(TOUCH_SHORT);
 #endif
 
@@ -443,4 +449,9 @@ uint8_t wait_for_user_presence(uint8_t entry)
     else
         wait_status = WAIT_NONE;
     return USER_PRESENCE_OK;
+}
+
+void device_get_aaguid(uint8_t *data, uint8_t len){
+
+    memcpy(data,u2f_aaguid_start,len);
 }

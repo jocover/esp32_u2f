@@ -120,6 +120,7 @@ void device_init(void);
 void device_recv_data(uint8_t const* data,uint16_t len);
 void device_loop(uint8_t has_touch);
 void device_send_response(uint8_t *data, uint8_t len);
+void device_get_aaguid(uint8_t *data, uint8_t len);
 
 #endif
 
