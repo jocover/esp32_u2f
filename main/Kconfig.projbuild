@@ -14,7 +14,7 @@ menu "ESP32 U2F GPIO Configuration"
 
     config BUTTON_ENABLE
         bool "enable button support"
-        default n
+        default y
         help
             Use button to confirm enter,Default use automatically enter
 

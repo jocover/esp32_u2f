@@ -22,12 +22,11 @@
  */
 
 #include <rand.h>
+#include "esp_random.h"
 
-static uint32_t seed = 0;
 
 __attribute__((weak)) uint32_t random32(void) {
-  seed = 1664525 * seed + 1013904223;
-  return seed;
+  return esp_random();
 }
 
 __attribute__((weak)) void random_buffer(uint8_t *buf, size_t len) {
@@ -58,6 +57,6 @@ void random_permute(char *str, size_t len) {
 
 int mbedtls_rnd(void *ctx, unsigned char *buf, size_t n) {
   (void)ctx;
-  random_buffer(buf, n);
+  esp_fill_random(buf, n);
   return 0;
 }

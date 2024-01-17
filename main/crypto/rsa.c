@@ -33,7 +33,7 @@ __attribute__((weak)) int rsa_generate_key(rsa_key_t *key, uint16_t nbits) {
   int ret = 0;
 #ifdef USE_MBEDCRYPTO
   mbedtls_rsa_context rsa;
-  mbedtls_rsa_init(&rsa, MBEDTLS_RSA_PKCS_V15, 0);
+  mbedtls_rsa_init(&rsa);
   if (mbedtls_rsa_gen_key(&rsa, mbedtls_rnd, NULL, nbits, 65537) < 0) {
     ret = -1;
     goto cleanup;
@@ -57,7 +57,7 @@ __attribute__((weak)) int rsa_get_public_key(rsa_key_t *key, uint8_t *n) {
   int ret = 0;
 #ifdef USE_MBEDCRYPTO
   mbedtls_rsa_context rsa;
-  mbedtls_rsa_init(&rsa, MBEDTLS_RSA_PKCS_V15, 0);
+  mbedtls_rsa_init(&rsa);
   int pq_len = key->nbits / 16;
   if (mbedtls_rsa_import_raw(&rsa, NULL, 0, key->p, pq_len, key->q, pq_len, NULL, 0, key->e, 4) < 0) {
     ret = -1;
@@ -84,7 +84,7 @@ __attribute__((weak)) int rsa_private(const rsa_key_t *key, const uint8_t *input
   int ret = 0;
 #ifdef USE_MBEDCRYPTO
   mbedtls_rsa_context rsa;
-  mbedtls_rsa_init(&rsa, MBEDTLS_RSA_PKCS_V15, 0);
+  mbedtls_rsa_init(&rsa);
   int pq_len = key->nbits / 16;
   if (mbedtls_rsa_import_raw(&rsa, NULL, 0, key->p, pq_len, key->q, pq_len, NULL, 0, key->e, 4) < 0) {
     ret = -1;

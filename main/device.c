@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/ringbuf.h"
 #include "class/hid/hid_device.h"
 #include "ctaphid.h"
 #include "esp_log.h"
@@ -29,7 +30,7 @@ extern const unsigned char u2f_aaguid_end[] asm("_binary_u2f_aaguid_bin_end");
 
 static SemaphoreHandle_t hid_tx_requested = NULL;
 static SemaphoreHandle_t hid_tx_done = NULL;
-static QueueHandle_t hid_queue = NULL;
+static RingbufHandle_t hid_rx_rb = NULL;
 
 volatile static uint8_t touch_result;
 
@@ -258,7 +259,7 @@ void device_init(void)
 
     ESP_ERROR_CHECK(gpio_config(&boot_button_config));
 #endif
-    hid_queue = xQueueCreate(32, HID_RPT_SIZE);
+    hid_rx_rb = xRingbufferCreate(HID_RPT_SIZE*32, RINGBUF_TYPE_BYTEBUF);
     hid_tx_requested = xSemaphoreCreateBinary();
     hid_tx_done = xSemaphoreCreateBinary();
 
@@ -280,25 +281,28 @@ void device_init(void)
 void device_recv_data(uint8_t const *data, uint16_t len)
 {
 
-    uint8_t packet_buf[HID_RPT_SIZE];
+
     if (len == 0)
     {
         return;
     }
-    memcpy(packet_buf, data, len);
-
-    xQueueSend(hid_queue, &packet_buf, 0);
+    xRingbufferSend(hid_rx_rb, data, HID_RPT_SIZE, 0);
 }
 
 void device_loop(uint8_t has_touch)
 {
-
     uint8_t packet_buf[HID_RPT_SIZE];
+    size_t item_size = 0;
+    uint8_t *data = xRingbufferReceiveUpTo(hid_rx_rb, &item_size, 0, HID_RPT_SIZE);
 
-    if (xQueueReceive(hid_queue, packet_buf, 0))
+
+    if (item_size==HID_RPT_SIZE)
     {
+        memcpy(packet_buf,data,item_size);
+        vRingbufferReturnItem(hid_rx_rb, data);
         CTAPHID_OutEvent(packet_buf);
     }
+    
 
     CTAPHID_Loop(0);
 
