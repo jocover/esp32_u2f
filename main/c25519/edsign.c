@@ -5,9 +5,9 @@
  */
 
 #include "ed25519.h"
-#include "sha512.h"
 #include "fprime.h"
 #include "edsign.h"
+#include "mbedtls/sha512.h"
 
 #define EXPANDED_SIZE  64
 
@@ -20,11 +20,14 @@ static const uint8_t ed25519_order[FPRIME_SIZE] = {
 
 static void expand_key(uint8_t *expanded, const uint8_t *secret)
 {
-	struct sha512_state s;
 
-	sha512_init(&s);
-	sha512_final(&s, secret, EDSIGN_SECRET_KEY_SIZE);
-	sha512_get(&s, expanded, 0, EXPANDED_SIZE);
+	mbedtls_sha512_context sha512;
+	mbedtls_sha512_init(&sha512);
+	mbedtls_sha512_starts(&sha512, 0);
+	mbedtls_sha512_update(&sha512, secret, EDSIGN_SECRET_KEY_SIZE);
+	mbedtls_sha512_finish(&sha512,expanded);
+	mbedtls_sha512_free(&sha512);
+
 	ed25519_prepare(expanded);
 }
 
@@ -67,36 +70,37 @@ static void hash_with_prefix(uint8_t *out_fp,
 			     uint8_t *init_block, unsigned int prefix_size,
 			     const uint8_t *message, size_t len)
 {
-	struct sha512_state s;
+	mbedtls_sha512_context sha512;
 
-	sha512_init(&s);
+	mbedtls_sha512_init(&sha512);
+	mbedtls_sha512_starts(&sha512, 0);
 
-	if (len < SHA512_BLOCK_SIZE && len + prefix_size < SHA512_BLOCK_SIZE) {
+	if (len < 64 && len + prefix_size < 64) {
 		memcpy(init_block + prefix_size, message, len);
-		sha512_final(&s, init_block, len + prefix_size);
+		mbedtls_sha512_update(&sha512, init_block, len + prefix_size);
 	} else {
 		size_t i;
 
 		memcpy(init_block + prefix_size, message,
-		       SHA512_BLOCK_SIZE - prefix_size);
-		sha512_block(&s, init_block);
+		       64 - prefix_size);
+		mbedtls_sha512_update(&sha512, init_block, 128);
 
-		for (i = SHA512_BLOCK_SIZE - prefix_size;
-		     i + SHA512_BLOCK_SIZE <= len;
-		     i += SHA512_BLOCK_SIZE)
-			sha512_block(&s, message + i);
+		for (i = 64 - prefix_size;
+		     i + 64 <= len;
+		     i += 64)
+			mbedtls_sha512_update(&sha512, message + i, 128);
 
-		sha512_final(&s, message + i, len + prefix_size);
+		mbedtls_sha512_update(&sha512, message + i,len + prefix_size);
 	}
-
-	sha512_get(&s, init_block, 0, SHA512_HASH_SIZE);
-	fprime_from_bytes(out_fp, init_block, SHA512_HASH_SIZE, ed25519_order);
+	mbedtls_sha512_finish(&sha512,init_block);
+	mbedtls_sha512_free(&sha512);
+	fprime_from_bytes(out_fp, init_block, 64, ed25519_order);
 }
 
 static void generate_k(uint8_t *k, const uint8_t *kgen_key,
 		       const uint8_t *message, size_t len)
 {
-	uint8_t block[SHA512_BLOCK_SIZE];
+	uint8_t block[64];
 
 	memcpy(block, kgen_key, 32);
 	hash_with_prefix(k, block, 32, message, len);
@@ -105,7 +109,7 @@ static void generate_k(uint8_t *k, const uint8_t *kgen_key,
 static void hash_message(uint8_t *z, const uint8_t *r, const uint8_t *a,
 			 const uint8_t *m, size_t len)
 {
-	uint8_t block[SHA512_BLOCK_SIZE];
+	uint8_t block[64];
 
 	memcpy(block, r, 32);
 	memcpy(block + 32, a, 32);
