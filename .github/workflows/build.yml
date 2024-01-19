@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: 
+        targets: [esp32s2, esp32s3]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      - name: ESP-IDF Build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.1.2
+          target: ${{ matrix.targets }}
+      - name: Package binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.targets }}_binaries
+          path: | 
+            build/esp32_u2f.bin
+            build/partition_table/partition-table.bin
+            build/bootloader/bootloader.bin
