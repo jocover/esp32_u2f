@@ -13,8 +13,8 @@ menu "ESP32 U2F GPIO Configuration"
             Some GPIOs are used for other purposes (flash connections, etc.) and cannot be used to blink.
 
     config BUTTON_ENABLE
-        bool "enable button support"
-        default y
+        bool "enable Button support"
+        default n
         help
             Use button to confirm enter,Default use automatically enter
 

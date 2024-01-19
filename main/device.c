@@ -269,11 +269,13 @@ void device_init(void)
     {
         ESP_LOGI(TAG, "cert file initialization");
 
-        ctap_install(true);
+        ctap_install(1);
 
         ctap_install_cert(u2f_cert_start, u2f_cert_end - u2f_cert_start);
         ctap_install_private_key(u2f_cert_key_start, u2f_cert_key_end - u2f_cert_key_start);
     }
+
+    ctap_install(0);
 
     ESP_LOGI(TAG, "u2f device init done");
 }
