@@ -213,8 +213,8 @@ key_type_t cose_alg_to_key_type(int alg) {
   switch (alg) {
   case COSE_ALG_ES256:
     return SECP256R1;
-  //case COSE_ALG_EDDSA:
-  //  return ED25519;
+  case COSE_ALG_EDDSA:
+    return ED25519;
   default:
     if (ctap_sm2_attr.enabled && alg == ctap_sm2_attr.algo_id) return SM2;
     return KEY_TYPE_PKC_END;
