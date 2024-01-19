@@ -25,14 +25,14 @@ esp32s2
 bootloader address is 0x1000
 
 ```
-esptool write_flash 0x1000 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 esp32_u2f.bin
+esptool write_flash --flash_size 2MB 0x1000 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 esp32_u2f.bin
 ```
 
 esp32s3
 bootloader address is 0x0
 
 ```
-esptool write_flash 0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 esp32_u2f.bin
+esptool write_flash --flash_size 2MB 0x0 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 esp32_u2f.bin
 ```
 
 ### Tools
