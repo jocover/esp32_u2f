@@ -9,27 +9,24 @@ Turns your cheap ESP32 U2F token.
 
 Any ESP board that have USB-OTG supported.
 
-### Build and Flash
+### Flash Example
 
-To build this example, set the target first:
-
+> **WARNING**
+> using erase_flash will lose all stored keys
 ```
-# Build for ESP32-S2 for example 
-idf.py set-target esp32s2
-```
-
-Launch the build:
-
-```
-idf.py build
+# Erase first 1MB size
+esptool erase_region 0x0 0x10000
 ```
 
-Finally, flash it:
+Flash binaries:
 
 ```
-idf.py flash 
+#esp32s3 chip ,--chip select esp32s3
+esptool -b 460800 --before default_reset --after hard_reset --chip esp32s2 write_flash --flash_mode dio --flash_freq 80m --flash_size 2MB 0x1000 bootloader/bootloader.bin 0x10000 esp32_u2f.bin 0x8000 partition_table/partition-table.bin
 ```
 
+### Tools 
+[espressif esptool](https://github.com/espressif/esptool/releases)
 
 
 ### License
