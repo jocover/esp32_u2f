@@ -15,14 +15,13 @@ Any ESP board that have USB-OTG supported.
 > using erase_flash will lose all stored keys
 ```
 # Erase first 1MB size
-esptool erase_region 0x0 0x10000
+esptool erase_region 0x0 0x100000
 ```
 
 Flash binaries:
 
 ```
-#esp32s3 chip ,--chip select esp32s3
-esptool -b 460800 --before default_reset --after hard_reset --chip esp32s2 write_flash --flash_mode dio --flash_freq 80m --flash_size 2MB 0x1000 bootloader/bootloader.bin 0x10000 esp32_u2f.bin 0x8000 partition_table/partition-table.bin
+esptool write_flash 0x1000 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin 0x10000 esp32_u2f.bin 
 ```
 
 ### Tools 
