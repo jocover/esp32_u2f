@@ -579,7 +579,7 @@ void mbedtls_edsign_sec_to_pub(uint8_t *pk, const uint8_t *sk)
 
     // write result
     size_t output_len;
-    mbedtls_ecp_point_write_binary(&ed25519, &p, MBEDTLS_ECP_PF_COMPRESSED, &output_len, pk,
+    ed25519_ecp_point_write_binary(&ed25519, &p, MBEDTLS_ECP_PF_COMPRESSED, &output_len, pk,
                                    EDSIGN_PUBLIC_KEY_SIZE);
 
     // cleanup
@@ -627,7 +627,7 @@ void mbedtls_edsign_sign(uint8_t *rs, const uint8_t *pk,
 
     // write result to RS[0..32]
     size_t output_len;
-    mbedtls_ecp_point_write_binary(&ed25519, &p, MBEDTLS_ECP_PF_COMPRESSED, &output_len, rs,
+    ed25519_ecp_point_write_binary(&ed25519, &p, MBEDTLS_ECP_PF_COMPRESSED, &output_len, rs,
                                    EDSIGN_PUBLIC_KEY_SIZE);
 
     // k = sha512(R, pk, m)
