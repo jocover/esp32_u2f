@@ -4,7 +4,7 @@
 #include <rand.h>
 #include <sm3.h>
 #include <string.h>
-#include "mbedtls_ed25519.h"
+#include "edsign.h"
 
 const uint8_t SM2_ID_DEFAULT[] = {0x10, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x31, 0x32, 0x33, 0x34, 0x35,
                                   0x36, 0x37, 0x38};
@@ -554,13 +554,13 @@ __attribute__((weak)) int K__short_weierstrass_ecdh(key_type_t type, const uint8
 }
 
 __attribute__((weak)) void K__ed25519_publickey(const K__ed25519_secret_key sk, K__ed25519_public_key pk) {
-  mbedtls_edsign_sec_to_pub(pk,sk);
+  edsign_sec_to_pub(pk,sk);
 }
 
 
 __attribute__((weak)) void K__ed25519_sign(const unsigned char *m, size_t mlen, const K__ed25519_secret_key sk,
                                            const K__ed25519_public_key pk, K__ed25519_signature rs) {
-  mbedtls_edsign_sign(rs,pk,sk,m,mlen);
+  edsign_sign(rs,pk,sk,m,mlen);
 
 }
 
