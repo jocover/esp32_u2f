@@ -161,8 +161,6 @@ static inline void wait_op_complete(void)
 void curve25519Mul(uint32_t *r, const uint32_t *a, const uint32_t *b)
 {
 
-   mpi_enable_hardware_hw_op();
-
    uint32_t i;
 
    // Set mode register
@@ -214,8 +212,6 @@ void curve25519Mul(uint32_t *r, const uint32_t *a, const uint32_t *b)
       r[i] = DPORT_SEQUENCE_REG_READ(RSA_MEM_Z_BLOCK_BASE + i * 4);
    }
 
-
-   mpi_disable_hardware_hw_op();
 }
 
 void curve25519SetInt(uint32_t *a, uint32_t b)
@@ -652,6 +648,8 @@ int ed25519GeneratePublicKey(const uint8_t *privateKey, uint8_t *publicKey)
    // the buffer as the little-endian integer, forming a secret scalar s
    s = digest;
 
+   mpi_enable_hardware_hw_op();
+
    // The lowest three bits of the first octet are cleared, the highest bit
    // of the last octet is cleared, and the second highest bit of the last
    // octet is set
@@ -664,6 +662,8 @@ int ed25519GeneratePublicKey(const uint8_t *privateKey, uint8_t *publicKey)
 
    // The public key A is the encoding of the point s * B
    ed25519Encode(&state->sb, publicKey);
+
+   mpi_disable_hardware_hw_op();
 
    // Erase working state
    memset(state, 0, sizeof(Ed25519State));
@@ -846,6 +846,8 @@ int ed25519GenerateSignatureEx(const uint8_t *privateKey,
    // Construct the secret scalar s from the first half of the digest
    memcpy(state->s, digest, 32);
 
+   mpi_enable_hardware_hw_op();
+
    // The lowest three bits of the first octet are cleared, the highest bit
    // of the last octet is cleared, and the second highest bit of the last
    // octet is set
@@ -945,6 +947,8 @@ int ed25519GenerateSignatureEx(const uint8_t *privateKey,
    // Perform modular reduction
    c = ed25519SubInt(state->p, state->s, ED25519_L, 32);
    ed25519SelectInt(signature + 32, state->p, state->s, c, 32);
+
+   mpi_disable_hardware_hw_op();
 
    // Erase working state
    memset(state, 0, sizeof(Ed25519State));
