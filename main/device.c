@@ -12,10 +12,14 @@
 #include "driver/gpio.h"
 #include "driver/gptimer.h"
 #include "esp_partition.h"
+#include "esp_timer.h"
 #include <memzero.h>
 #include "ctap.h"
 #include "sdkconfig.h"
-#include "secret.h"
+#include "ccid_device.h"
+#include "ccid.h"
+#include "applets.h"
+#include "esp_mac.h"
 
 #define NVS_PARTITION_LABEL "lfs"
 
@@ -259,30 +263,42 @@ void device_init(void)
 
     ESP_ERROR_CHECK(gpio_config(&boot_button_config));
 #endif
-    hid_rx_rb = xRingbufferCreate(HID_RPT_SIZE*32, RINGBUF_TYPE_BYTEBUF);
+
+    hid_rx_rb = xRingbufferCreate(HID_RPT_SIZE * 32, RINGBUF_TYPE_BYTEBUF);
     hid_tx_requested = xSemaphoreCreateBinary();
     hid_tx_done = xSemaphoreCreateBinary();
 
     CTAPHID_Init();
+    CCID_Init();
 
     if (get_file_size("ctap_cert") <= 0)
     {
         ESP_LOGI(TAG, "cert file initialization");
 
-        ctap_install(1);
+        CAPDU apdu_cert;
 
-        ctap_install_cert(u2f_cert_start, u2f_cert_end - u2f_cert_start);
-        ctap_install_private_key(u2f_cert_key_start, u2f_cert_key_end - u2f_cert_key_start);
+        apdu_cert.lc = u2f_cert_end - u2f_cert_start;
+        apdu_cert.data = (uint8_t *)u2f_cert_start;
+
+        ctap_install_cert(&apdu_cert, NULL);
+
+        apdu_cert.lc = u2f_cert_key_end - u2f_cert_key_start;
+        apdu_cert.data = (uint8_t *)u2f_cert_key_start;
+        ctap_install_private_key(&apdu_cert, NULL);
+
+        uint8_t sta_mac[6];
+        esp_efuse_mac_get_default(sta_mac);
+
+        write_file("sn", sta_mac + 2, 0, 4, 1);
     }
 
-    ctap_install(0);
+    applets_install();
 
     ESP_LOGI(TAG, "u2f device init done");
 }
 
 void device_recv_data(uint8_t const *data, uint16_t len)
 {
-
 
     if (len == 0)
     {
@@ -297,18 +313,16 @@ void device_loop(uint8_t has_touch)
     size_t item_size = 0;
     uint8_t *data = xRingbufferReceiveUpTo(hid_rx_rb, &item_size, 0, HID_RPT_SIZE);
 
-
-    if (item_size==HID_RPT_SIZE)
+    if (item_size == HID_RPT_SIZE)
     {
-        memcpy(packet_buf,data,item_size);
+        memcpy(packet_buf, data, item_size);
         vRingbufferReturnItem(hid_rx_rb, data);
         CTAPHID_OutEvent(packet_buf);
     }
-    
 
     CTAPHID_Loop(0);
 
-    // ESP_LOGI(TAG, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
+    CCID_Loop();
 }
 
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, /*uint16_t*/ uint8_t len)
@@ -371,10 +385,7 @@ uint8_t get_touch_result(void)
     {
         set_touch_result(TOUCH_SHORT);
     }
-
-    cp_begin_using_uv_auth_token(1);
 #else
-    cp_begin_using_uv_auth_token(1);
     set_touch_result(TOUCH_SHORT);
 #endif
 
@@ -457,7 +468,99 @@ uint8_t wait_for_user_presence(uint8_t entry)
     return USER_PRESENCE_OK;
 }
 
-void device_get_aaguid(uint8_t *data, uint8_t len){
+void device_get_aaguid(uint8_t *data, uint8_t len)
+{
 
-    memcpy(data,u2f_aaguid_start,len);
+    memcpy(data, u2f_aaguid_start, len);
+}
+
+int device_spinlock_lock(spinlock_t *lock, uint32_t blocking)
+{
+
+    if (blocking)
+    {
+        spinlock_acquire(lock, SPINLOCK_WAIT_FOREVER);
+    }
+    else
+    {
+
+        spinlock_acquire(lock, SPINLOCK_NO_WAIT);
+    }
+
+    return 0;
+}
+
+void device_spinlock_unlock(spinlock_t *lock)
+{
+    spinlock_release(lock);
+}
+
+esp_timer_handle_t m_timer_timeout = NULL;
+
+void device_set_timeout(void (*callback)(void *), uint16_t timeout)
+{
+    if (m_timer_timeout)
+    {
+        esp_timer_stop(m_timer_timeout);
+        esp_timer_delete(m_timer_timeout);
+        m_timer_timeout = NULL;
+    }
+
+    if (timeout)
+    {
+        const esp_timer_create_args_t timer_args = {
+            .callback = callback,
+            /* name is optional, but may help identify the timer when debugging */
+            .name = "one-shot"};
+
+        esp_timer_create(&timer_args, &m_timer_timeout);
+        esp_timer_start_once(m_timer_timeout, timeout * 1000);
+    }
+}
+
+int device_atomic_compare_and_swap(volatile uint32_t *var, uint32_t expect, uint32_t update)
+{
+    if (*var == expect)
+    {
+        *var = update;
+        return 0;
+    }
+    else
+    {
+        return -1;
+    }
+}
+
+__attribute__((weak)) int strong_user_presence_test(void)
+{
+    for (int i = 0; i < 5; i++)
+    {
+        const uint8_t wait_sec = 2;
+        start_blinking_interval(wait_sec, (i & 1) ? 200 : 50);
+        uint32_t now, begin = device_get_tick();
+        bool user_presence = false;
+        do
+        {
+            if (get_touch_result() == TOUCH_SHORT)
+            {
+                user_presence = true;
+                set_touch_result(TOUCH_NO);
+                stop_blinking();
+                // wait for some time before next user-precense test
+                begin = device_get_tick();
+            }
+            now = device_get_tick();
+        } while (now - begin < 1000 * wait_sec);
+        if (!user_presence)
+        {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+void device_delay(int ms)
+{
+
+    vTaskDelay(pdMS_TO_TICKS(ms));
 }

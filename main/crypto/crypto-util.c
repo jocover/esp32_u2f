@@ -10,7 +10,7 @@ void print_hex(const uint8_t *buf, size_t len) {
   printf("\n");
 }
 
-int memcmp_s(const void *p, const void *q, size_t len) {
+int memcmp(const void *p, const void *q, size_t len) {
   volatile size_t equal = 0, notequal = 0;
   for (size_t i = 0; i != len; ++i)
     if (((uint8_t*)p)[i] == ((uint8_t*)q)[i])

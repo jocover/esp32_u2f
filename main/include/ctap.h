@@ -6,8 +6,8 @@
 #include <stdint.h>
 
 uint8_t ctap_install(uint8_t reset);
-int ctap_install_private_key(const uint8_t* cert_key,lfs_size_t len);
-int ctap_install_cert(const uint8_t* cert,lfs_size_t len);
+int ctap_install_private_key(const CAPDU *capdu, RAPDU *rapdu);
+int ctap_install_cert(const CAPDU *capdu, RAPDU *rapdu);
 int ctap_read_sm2_config(const CAPDU *capdu, RAPDU *rapdu);
 int ctap_write_sm2_config(const CAPDU *capdu, RAPDU *rapdu);
 int ctap_process_cbor(uint8_t *req, size_t req_len, uint8_t *resp, size_t *resp_len);

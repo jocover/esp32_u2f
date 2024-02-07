@@ -53,6 +53,8 @@
     send_keepalive_during_processing(WAIT_ENTRY_CTAPHID);                                                              \
   } while (0)
 
+static const uint8_t aaguid[] = {0x24, 0x4e, 0xb2, 0x9e, 0xe0, 0x90, 0x4e, 0x49,
+                                 0x81, 0xfe, 0x1f, 0x20, 0xf8, 0xd3, 0xb8, 0xf4};
 
 // pin & command states
 static uint8_t consecutive_pin_counter, last_cmd;
@@ -88,17 +90,19 @@ uint8_t ctap_install(uint8_t reset) {
   return 0;
 }
 
-int ctap_install_private_key(const uint8_t* cert_key,lfs_size_t len) {
+int ctap_install_private_key(const CAPDU *capdu, RAPDU *rapdu) {
+  if (LC != PRI_KEY_SIZE) EXCEPT(SW_WRONG_LENGTH);
   // initialize SM2 config
   ctap_sm2_attr.enabled = 0;
   ctap_sm2_attr.curve_id = 9; // An unused one. See https://www.iana.org/assignments/cose/cose.xhtml#elliptic-curves
   ctap_sm2_attr.algo_id = -48; // An unused one. See https://www.iana.org/assignments/cose/cose.xhtml#algorithms
   if (write_attr(CTAP_CERT_FILE, SM2_ATTR, &ctap_sm2_attr, sizeof(ctap_sm2_attr)) < 0) return CTAP2_ERR_UNHANDLED_REQUEST;
-  return write_attr(CTAP_CERT_FILE, KEY_ATTR, cert_key, len);
+  return write_attr(CTAP_CERT_FILE, KEY_ATTR, DATA, LC);
 }
 
-int ctap_install_cert(const uint8_t* cert,lfs_size_t len) {
-  return write_file(CTAP_CERT_FILE, cert, 0, len, 1);
+int ctap_install_cert(const CAPDU *capdu, RAPDU *rapdu) {
+  if (LC > MAX_CERT_SIZE) EXCEPT(SW_WRONG_LENGTH);
+  return write_file(CTAP_CERT_FILE, DATA, 0, LC, 1);
 }
 
 int ctap_read_sm2_config(const CAPDU *capdu, RAPDU *rapdu) {
@@ -270,7 +274,7 @@ uint8_t ctap_make_auth_data(uint8_t *rp_id_hash, uint8_t *buf, uint8_t flags, co
     // If no credProtect extension was included in the request the authenticator SHOULD use the default value of 1 for compatibility with CTAP2.0 platforms.
     if (cred_protect == CRED_PROTECT_ABSENT) cred_protect = CRED_PROTECT_VERIFICATION_OPTIONAL;
 
-    device_get_aaguid(ad->at.aaguid,16);
+    memcpy(ad->at.aaguid, aaguid, sizeof(aaguid));
     ad->at.credential_id_length = htobe16(sizeof(credential_id));
     memcpy(ad->at.credential_id.rp_id_hash, rp_id_hash, sizeof(ad->at.credential_id.rp_id_hash));
     if (generate_key_handle(&ad->at.credential_id, ad->at.public_key, alg_type, (uint8_t)dc, cred_protect) < 0) {

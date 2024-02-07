@@ -5,6 +5,7 @@
 
 #include "common.h"
 #include <stdbool.h>
+#include "spinlock.h"
 
 #define TOUCH_NO 0
 #define TOUCH_SHORT 1
@@ -16,6 +17,13 @@
 
 #define WAIT_ENTRY_CCID 0
 #define WAIT_ENTRY_CTAPHID 1
+
+// CCID Bulk State machine
+#define CCID_STATE_IDLE 0
+#define CCID_STATE_RECEIVE_DATA 1
+#define CCID_STATE_DATA_IN 2
+#define CCID_STATE_DATA_IN_WITH_ZLP 3
+#define CCID_STATE_PROCESS_DATA 4
 
 typedef enum { CTAPHID_IDLE = 0, CTAPHID_BUSY } CTAPHID_StateTypeDef;
 
@@ -36,14 +44,14 @@ uint32_t device_get_tick(void);
  *
  * @return 0 for locking successfully, -1 for failure.
  */
-int device_spinlock_lock(volatile uint32_t *lock, uint32_t blocking);
+int device_spinlock_lock(spinlock_t *lock, uint32_t blocking);
 
 /**
  * Unlock the specific handler.
  *
  * @param lock  The lock handler.
  */
-void device_spinlock_unlock(volatile uint32_t *lock);
+void device_spinlock_unlock(spinlock_t *lock);
 
 /**
  * Update the value of a variable atomically.
@@ -56,7 +64,7 @@ int device_atomic_compare_and_swap(volatile uint32_t *var, uint32_t expect, uint
 
 void led_on(void);
 void led_off(void);
-void device_set_timeout(void (*callback)(void), uint16_t timeout);
+void device_set_timeout(void (*callback)(void*), uint16_t timeout);
 
 // NFC related
 /**

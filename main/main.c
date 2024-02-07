@@ -13,13 +13,12 @@
 #include "driver/gpio.h"
 #include "sdkconfig.h"
 #include "device.h"
+#include "ccid_device.h"
 
-
-#define APP_BUTTON (GPIO_NUM_0) // Use BOOT signal by default
 static const char *TAG = "main";
 
 /************* TinyUSB descriptors ****************/
-#define TUSB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_INOUT_DESC_LEN)
+#define TUSB_DESC_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_INOUT_DESC_LEN + TUD_CCID_DESC_LEN )
 
 static const tusb_desc_device_t hid_u2f_device_desc = {
     .bLength = sizeof(hid_u2f_device_desc),
@@ -47,7 +46,7 @@ static const tusb_desc_device_t hid_u2f_device_desc = {
     .iSerialNumber = 0x03,
     .bNumConfigurations = 0x01};
 
-static char const *hid_u2f_string_descriptor[] = {
+static char const *u2f_string_descriptor[] = {
     (const char[]){0x09, 0x04},              // 0: is supported language is English (0x0409)
     CONFIG_TINYUSB_DESC_MANUFACTURER_STRING, // 1: Manufacturer
     CONFIG_TINYUSB_DESC_PRODUCT_STRING,      // 2: Product
@@ -70,10 +69,12 @@ const uint8_t u2f_report_descriptor[] = {
 
 static const uint8_t u2f_configuration_descriptor[] = {
     // Configuration number, interface count, string index, total length, attribute, power in mA
-    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUSB_DESC_TOTAL_LEN, 0, 100),
+    TUD_CONFIG_DESCRIPTOR(1, 2, 0, TUSB_DESC_TOTAL_LEN, 0, 100),
 
     // Interface number, string index, protocol, report descriptor len, EP OUT & IN address, size & polling interval
     TUD_HID_INOUT_DESCRIPTOR(0, 2, HID_ITF_PROTOCOL_NONE, sizeof(u2f_report_descriptor), 0x01, 0x80 | 0x01, CFG_TUD_HID_EP_BUFSIZE, 5),
+
+    TUD_CCID_DESCRIPTOR(1, 2, CCID_EPOUT, CCID_EPIN, CFG_TUD_CCID_EP_BUFSIZE),
 
 };
 
@@ -119,8 +120,8 @@ void app_main(void)
     ESP_LOGI(TAG, "USB initialization");
     const tinyusb_config_t tusb_cfg = {
         .device_descriptor = &hid_u2f_device_desc,
-        .string_descriptor = hid_u2f_string_descriptor,
-        .string_descriptor_count = sizeof(hid_u2f_string_descriptor) / sizeof(hid_u2f_string_descriptor[0]),
+        .string_descriptor = u2f_string_descriptor,
+        .string_descriptor_count = sizeof(u2f_string_descriptor) / sizeof(u2f_string_descriptor[0]),
         .external_phy = false,
         .configuration_descriptor = u2f_configuration_descriptor,
     };
@@ -132,6 +133,6 @@ void app_main(void)
     {
         device_loop(0);
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
