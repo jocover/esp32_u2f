@@ -53,9 +53,6 @@
     send_keepalive_during_processing(WAIT_ENTRY_CTAPHID);                                                              \
   } while (0)
 
-static const uint8_t aaguid[] = {0x24, 0x4e, 0xb2, 0x9e, 0xe0, 0x90, 0x4e, 0x49,
-                                 0x81, 0xfe, 0x1f, 0x20, 0xf8, 0xd3, 0xb8, 0xf4};
-
 // pin & command states
 static uint8_t consecutive_pin_counter, last_cmd;
 // SM2 attr
@@ -274,7 +271,8 @@ uint8_t ctap_make_auth_data(uint8_t *rp_id_hash, uint8_t *buf, uint8_t flags, co
     // If no credProtect extension was included in the request the authenticator SHOULD use the default value of 1 for compatibility with CTAP2.0 platforms.
     if (cred_protect == CRED_PROTECT_ABSENT) cred_protect = CRED_PROTECT_VERIFICATION_OPTIONAL;
 
-    memcpy(ad->at.aaguid, aaguid, sizeof(aaguid));
+    device_get_aaguid(ad->at.aaguid,16);
+
     ad->at.credential_id_length = htobe16(sizeof(credential_id));
     memcpy(ad->at.credential_id.rp_id_hash, rp_id_hash, sizeof(ad->at.credential_id.rp_id_hash));
     if (generate_key_handle(&ad->at.credential_id, ad->at.public_key, alg_type, (uint8_t)dc, cred_protect) < 0) {
